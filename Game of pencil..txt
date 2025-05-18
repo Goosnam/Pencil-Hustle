@@ -1,0 +1,1434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Pencil Hustle</title>
+<style>
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #121212;
+  color: #fff;
+  font-family: 'Segoe UI', sans-serif;
+  overflow: hidden;
+}
+canvas {
+  display: block;
+  background: linear-gradient(to bottom, #2e2e2e, #121212);
+  border: 4px solid #4ad;
+  box-shadow: 0 0 30px #4ad;
+  margin: auto;
+  image-rendering: pixelated;
+}
+#ui {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 2;
+  font-size: 16px;
+  background: rgba(0, 0, 0, 0.7);
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid #4ad;
+}
+#ui span {
+  margin-right: 15px;
+}
+#gameOverScreen {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.9);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  display: none;
+  text-align: center;
+  color: #fff;
+}
+button {
+  padding: 10px 20px;
+  font-size: 16px;
+  margin-top: 20px;
+  cursor: pointer;
+  border: none;
+  border-radius: 10px;
+  background: #4ad;
+  color: #000;
+  transition: background 0.3s;
+}
+button:hover {
+  background: #6cf;
+}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="ui">
+  <span id="pencils">Pencils: 0</span>
+  <span id="points">Points: 0</span>
+  <span id="money">Money: $0</span>
+  <span id="tier">Tier: Bronze</span>
+  <span id="timer">10:00</span>
+  <span style="margin-left:15px">[Arrows] Move &nbsp; [Space] Sell &nbsp; [U] Upgrade</span>
+</div>
+<div id="gameOverScreen">
+  <h1 id="finalScore"></h1>
+  <h2>High Scores</h2>
+  <ol id="highScores"></ol>
+  <button onclick="restart()">Play Again</button>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/howler@2.2.3/dist/howler.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/craftpip/sweetalert@1.1.3/dist/sweetalert.min.js"></script>
+<script>
+// START OF GAME SCRIPT
+
+// CHUNK 1: Variables and canvas setup
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+canvas.width = 960;
+canvas.height = 540;
+
+const keys = {};
+let pencils = 0;
+let points = 0;
+let money = 0;
+let tier = 1;
+let tierName = ['Bronze', 'Silver', 'Gold', 'Platinum'];
+let backpackSize = 5;
+let inventory = [];
+let stamina = 100;
+let maxStamina = 100;
+let energyRegen = 0.5;
+let gameTime = 600; // seconds
+let gameOver = false;
+let highScores = [];
+
+let player = {
+  x: 100,
+  y: 100,
+  w: 32,
+  h: 32,
+  speed: 2.5,
+  color: '#4ad',
+  dx: 0,
+  dy: 0
+};
+
+let pencilsOnMap = [];
+let teachers = [];
+let lockers = [];
+let obstacles = [];
+let powerUps = [];
+
+// Placeholder images (these will be base64 later or image URLs)
+const pencilImg = new Image();
+pencilImg.src = 'https://upload.wikimedia.org/wikipedia/commons/thumb/5/55/Pencil_icon.svg/32px-Pencil_icon.svg.png';
+
+const playerImg = new Image();
+playerImg.src = 'https://i.imgur.com/OdL0XPt.png'; // Sample animated sprite
+
+const teacherImg = new Image();
+teacherImg.src = 'https://i.imgur.com/m1zM5zB.png';
+
+// Sounds
+const pickupSound = new Howl({ src: ['https://freesound.org/data/previews/66/66717_931655-lq.mp3'] });
+const alertSound = new Howl({ src: ['https://freesound.org/data/previews/103/103046_861714-lq.mp3'] });
+
+// Utility functions
+function randomRange(min, max) {
+  return Math.random() * (max - min) + min;
+}
+
+function rectsCollide(a, b) {
+  return (
+    a.x < b.x + b.w &&
+    a.x + a.w > b.x &&
+    a.y < b.y + b.h &&
+    a.y + a.h > b.y
+  );
+}
+document.addEventListener('keydown', (e) => keys[e.key] = true);
+document.addEventListener('keyup', (e) => keys[e.key] = false);
+
+function spawnPencil() {
+  if (pencilsOnMap.length < 10) {
+    pencilsOnMap.push({
+      x: randomRange(50, canvas.width - 50),
+      y: randomRange(50, canvas.height - 50),
+      w: 16,
+      h: 16,
+      tier: Math.floor(Math.random() * tierName.length)
+    });
+  }
+}
+
+function updatePlayer() {
+  player.dx = 0;
+  player.dy = 0;
+  if (keys['ArrowUp']) player.dy = -player.speed;
+  if (keys['ArrowDown']) player.dy = player.speed;
+  if (keys['ArrowLeft']) player.dx = -player.speed;
+  if (keys['ArrowRight']) player.dx = player.speed;
+
+  // Normalize speed if moving diagonally
+  if (player.dx !== 0 && player.dy !== 0) {
+    player.dx *= 0.7071;
+    player.dy *= 0.7071;
+  }
+
+  // Update position
+  player.x += player.dx;
+  player.y += player.dy;
+
+  // Boundaries
+  player.x = Math.max(0, Math.min(canvas.width - player.w, player.x));
+  player.y = Math.max(0, Math.min(canvas.height - player.h, player.y));
+
+  // Energy drain and regen
+  if (player.dx !== 0 || player.dy !== 0) {
+    stamina = Math.max(0, stamina - 0.2);
+  } else {
+    stamina = Math.min(maxStamina, stamina + energyRegen);
+  }
+}
+
+function collectPencils() {
+  pencilsOnMap.forEach((p, i) => {
+    if (rectsCollide(player, p)) {
+      if (inventory.length < backpackSize) {
+        pickupSound.play();
+        inventory.push(p);
+        pencilsOnMap.splice(i, 1);
+      }
+    }
+  });
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Draw pencils
+  pencilsOnMap.forEach(p => {
+    ctx.drawImage(pencilImg, p.x, p.y, p.w, p.h);
+  });
+
+  // Draw player
+  ctx.drawImage(playerImg, player.x, player.y, player.w, player.h);
+
+  // UI updates
+  document.getElementById('pencils').textContent = `Pencils: ${inventory.length}`;
+  document.getElementById('points').textContent = `Points: ${points}`;
+  document.getElementById('money').textContent = `Money: $${money}`;
+  document.getElementById('tier').textContent = `Tier: ${tierName[tier - 1]}`;
+  let min = Math.floor(gameTime / 60);
+  let sec = gameTime % 60;
+  document.getElementById('timer').textContent = `${min}:${sec.toString().padStart(2, '0')}`;
+}
+
+function update() {
+  if (gameOver) return;
+
+  updatePlayer();
+  collectPencils();
+
+  if (Math.random() < 0.05) spawnPencil();
+
+  if (gameTime > 0) {
+    if (frame % 60 === 0) gameTime--;
+  } else {
+    endGame();
+  }
+}
+
+function loop() {
+  frame++;
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+let frame = 0;
+loop();
+document.addEventListener('keydown', (e) => keys[e.key] = true);
+document.addEventListener('keyup', (e) => keys[e.key] = false);
+
+function spawnPencil() {
+  if (pencilsOnMap.length < 10) {
+    pencilsOnMap.push({
+      x: randomRange(50, canvas.width - 50),
+      y: randomRange(50, canvas.height - 50),
+      w: 16,
+      h: 16,
+      tier: Math.floor(Math.random() * tierName.length)
+    });
+  }
+}
+
+function updatePlayer() {
+  player.dx = 0;
+  player.dy = 0;
+  if (keys['ArrowUp']) player.dy = -player.speed;
+  if (keys['ArrowDown']) player.dy = player.speed;
+  if (keys['ArrowLeft']) player.dx = -player.speed;
+  if (keys['ArrowRight']) player.dx = player.speed;
+
+  // Normalize speed if moving diagonally
+  if (player.dx !== 0 && player.dy !== 0) {
+    player.dx *= 0.7071;
+    player.dy *= 0.7071;
+  }
+
+  // Update position
+  player.x += player.dx;
+  player.y += player.dy;
+
+  // Boundaries
+  player.x = Math.max(0, Math.min(canvas.width - player.w, player.x));
+  player.y = Math.max(0, Math.min(canvas.height - player.h, player.y));
+
+  // Energy drain and regen
+  if (player.dx !== 0 || player.dy !== 0) {
+    stamina = Math.max(0, stamina - 0.2);
+  } else {
+    stamina = Math.min(maxStamina, stamina + energyRegen);
+  }
+}
+
+function collectPencils() {
+  pencilsOnMap.forEach((p, i) => {
+    if (rectsCollide(player, p)) {
+      if (inventory.length < backpackSize) {
+        pickupSound.play();
+        inventory.push(p);
+        pencilsOnMap.splice(i, 1);
+      }
+    }
+  });
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Draw pencils
+  pencilsOnMap.forEach(p => {
+    ctx.drawImage(pencilImg, p.x, p.y, p.w, p.h);
+  });
+
+  // Draw player
+  ctx.drawImage(playerImg, player.x, player.y, player.w, player.h);
+
+  // UI updates
+  document.getElementById('pencils').textContent = `Pencils: ${inventory.length}`;
+  document.getElementById('points').textContent = `Points: ${points}`;
+  document.getElementById('money').textContent = `Money: $${money}`;
+  document.getElementById('tier').textContent = `Tier: ${tierName[tier - 1]}`;
+  let min = Math.floor(gameTime / 60);
+  let sec = gameTime % 60;
+  document.getElementById('timer').textContent = `${min}:${sec.toString().padStart(2, '0')}`;
+}
+
+function update() {
+  if (gameOver) return;
+
+  updatePlayer();
+  collectPencils();
+
+  if (Math.random() < 0.05) spawnPencil();
+
+  if (gameTime > 0) {
+    if (frame % 60 === 0) gameTime--;
+  } else {
+    endGame();
+  }
+}
+
+function loop() {
+  frame++;
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+let frame = 0;
+loop();
+
+// CONTINUED IN CHUNK 3...
+
+// CHUNK 3: Selling, Upgrading, Teachers, Game Over
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === ' ') sellPencils();
+  if (e.key === 'u' || e.key === 'U') upgradeTier();
+});
+
+function sellPencils() {
+  let earnings = 0;
+  inventory.forEach(p => {
+    earnings += (p.tier + 1) * 5;
+    points += 1;
+  });
+  money += earnings;
+  inventory = [];
+}
+
+function upgradeTier() {
+  const upgradeCost = tier * 100;
+  if (money >= upgradeCost && tier < tierName.length) {
+    money -= upgradeCost;
+    tier++;
+    swal('Upgraded!', `You are now using ${tierName[tier - 1]} pencils!`, 'success');
+  }
+}
+
+function endGame() {
+  gameOver = true;
+  document.getElementById('gameOverScreen').style.display = 'flex';
+  document.getElementById('finalScore').textContent = `Final Score: ${points} points | $${money}`;
+  saveHighScore(points);
+}
+
+function restart() {
+  pencils = 0;
+  points = 0;
+  money = 0;
+  tier = 1;
+  backpackSize = 5;
+  inventory = [];
+  stamina = 100;
+  gameTime = 600;
+  player.x = 100;
+  player.y = 100;
+  pencilsOnMap = [];
+  document.getElementById('gameOverScreen').style.display = 'none';
+  gameOver = false;
+  frame = 0;
+}
+
+function saveHighScore(score) {
+  const scores = JSON.parse(localStorage.getItem('scores') || '[]');
+  const name = prompt("Enter your name for the leaderboard:", "Player");
+  scores.push({ name, score });
+  scores.sort((a, b) => b.score - a.score);
+  localStorage.setItem('scores', JSON.stringify(scores.slice(0, 5)));
+  renderHighScores();
+}
+
+function renderHighScores() {
+  const scores = JSON.parse(localStorage.getItem('scores') || '[]');
+  const ol = document.getElementById('highScores');
+  ol.innerHTML = '';
+  scores.forEach(s => {
+    const li = document.createElement('li');
+    li.textContent = `${s.name}: ${s.score}`;
+    ol.appendChild(li);
+  });
+}
+document.addEventListener('keydown', (e) => keys[e.key] = true);
+document.addEventListener('keyup', (e) => keys[e.key] = false);
+
+function spawnPencil() {
+  if (pencilsOnMap.length < 10) {
+    pencilsOnMap.push({
+      x: randomRange(50, canvas.width - 50),
+      y: randomRange(50, canvas.height - 50),
+      w: 16,
+      h: 16,
+      tier: Math.floor(Math.random() * tierName.length)
+    });
+  }
+}
+
+function updatePlayer() {
+  player.dx = 0;
+  player.dy = 0;
+  if (keys['ArrowUp']) player.dy = -player.speed;
+  if (keys['ArrowDown']) player.dy = player.speed;
+  if (keys['ArrowLeft']) player.dx = -player.speed;
+  if (keys['ArrowRight']) player.dx = player.speed;
+
+  // Normalize speed if moving diagonally
+  if (player.dx !== 0 && player.dy !== 0) {
+    player.dx *= 0.7071;
+    player.dy *= 0.7071;
+  }
+
+  // Update position
+  player.x += player.dx;
+  player.y += player.dy;
+
+  // Boundaries
+  player.x = Math.max(0, Math.min(canvas.width - player.w, player.x));
+  player.y = Math.max(0, Math.min(canvas.height - player.h, player.y));
+
+  // Energy drain and regen
+  if (player.dx !== 0 || player.dy !== 0) {
+    stamina = Math.max(0, stamina - 0.2);
+  } else {
+    stamina = Math.min(maxStamina, stamina + energyRegen);
+  }
+}
+
+function collectPencils() {
+  pencilsOnMap.forEach((p, i) => {
+    if (rectsCollide(player, p)) {
+      if (inventory.length < backpackSize) {
+        pickupSound.play();
+        inventory.push(p);
+        pencilsOnMap.splice(i, 1);
+      }
+    }
+  });
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Draw pencils
+  pencilsOnMap.forEach(p => {
+    ctx.drawImage(pencilImg, p.x, p.y, p.w, p.h);
+  });
+
+  // Draw player
+  ctx.drawImage(playerImg, player.x, player.y, player.w, player.h);
+
+  // UI updates
+  document.getElementById('pencils').textContent = `Pencils: ${inventory.length}`;
+  document.getElementById('points').textContent = `Points: ${points}`;
+  document.getElementById('money').textContent = `Money: $${money}`;
+  document.getElementById('tier').textContent = `Tier: ${tierName[tier - 1]}`;
+  let min = Math.floor(gameTime / 60);
+  let sec = gameTime % 60;
+  document.getElementById('timer').textContent = `${min}:${sec.toString().padStart(2, '0')}`;
+}
+
+function update() {
+  if (gameOver) return;
+
+  updatePlayer();
+  collectPencils();
+
+  if (Math.random() < 0.05) spawnPencil();
+
+  if (gameTime > 0) {
+    if (frame % 60 === 0) gameTime--;
+  } else {
+    endGame();
+  }
+}
+
+function loop() {
+  frame++;
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+let frame = 0;
+loop();
+
+// CONTINUED IN CHUNK 3...
+
+// CHUNK 3: Selling, Upgrading, Teachers, Game Over
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === ' ') sellPencils();
+  if (e.key === 'u' || e.key === 'U') upgradeTier();
+});
+
+function sellPencils() {
+  let earnings = 0;
+  inventory.forEach(p => {
+    earnings += (p.tier + 1) * 5;
+    points += 1;
+  });
+  money += earnings;
+  inventory = [];
+}
+
+function upgradeTier() {
+  const upgradeCost = tier * 100;
+  if (money >= upgradeCost && tier < tierName.length) {
+    money -= upgradeCost;
+    tier++;
+    swal('Upgraded!', `You are now using ${tierName[tier - 1]} pencils!`, 'success');
+  }
+}
+
+function endGame() {
+  gameOver = true;
+  document.getElementById('gameOverScreen').style.display = 'flex';
+  document.getElementById('finalScore').textContent = `Final Score: ${points} points | $${money}`;
+  saveHighScore(points);
+}
+
+function restart() {
+  pencils = 0;
+  points = 0;
+  money = 0;
+  tier = 1;
+  backpackSize = 5;
+  inventory = [];
+  stamina = 100;
+  gameTime = 600;
+  player.x = 100;
+  player.y = 100;
+  pencilsOnMap = [];
+  document.getElementById('gameOverScreen').style.display = 'none';
+  gameOver = false;
+  frame = 0;
+}
+
+function saveHighScore(score) {
+  const scores = JSON.parse(localStorage.getItem('scores') || '[]');
+  const name = prompt("Enter your name for the leaderboard:", "Player");
+  scores.push({ name, score });
+  scores.sort((a, b) => b.score - a.score);
+  localStorage.setItem('scores', JSON.stringify(scores.slice(0, 5)));
+  renderHighScores();
+}
+
+function renderHighScores() {
+  const scores = JSON.parse(localStorage.getItem('scores') || '[]');
+  const ol = document.getElementById('highScores');
+  ol.innerHTML = '';
+  scores.forEach(s => {
+    const li = document.createElement('li');
+    li.textContent = `${s.name}: ${s.score}`;
+    ol.appendChild(li);
+  });
+}
+
+document.addEventListener('keydown', (e) => keys[e.key] = true);
+document.addEventListener('keyup', (e) => keys[e.key] = false);
+
+function spawnPencil() {
+  if (pencilsOnMap.length < 10) {
+    pencilsOnMap.push({
+      x: randomRange(50, canvas.width - 50),
+      y: randomRange(50, canvas.height - 50),
+      w: 16,
+      h: 16,
+      tier: Math.floor(Math.random() * tierName.length)
+    });
+  }
+}
+
+function updatePlayer() {
+  player.dx = 0;
+  player.dy = 0;
+  if (keys['ArrowUp']) player.dy = -player.speed;
+  if (keys['ArrowDown']) player.dy = player.speed;
+  if (keys['ArrowLeft']) player.dx = -player.speed;
+  if (keys['ArrowRight']) player.dx = player.speed;
+
+  // Normalize speed if moving diagonally
+  if (player.dx !== 0 && player.dy !== 0) {
+    player.dx *= 0.7071;
+    player.dy *= 0.7071;
+  }
+
+  // Update position
+  player.x += player.dx;
+  player.y += player.dy;
+
+  // Boundaries
+  player.x = Math.max(0, Math.min(canvas.width - player.w, player.x));
+  player.y = Math.max(0, Math.min(canvas.height - player.h, player.y));
+
+  // Energy drain and regen
+  if (player.dx !== 0 || player.dy !== 0) {
+    stamina = Math.max(0, stamina - 0.2);
+  } else {
+    stamina = Math.min(maxStamina, stamina + energyRegen);
+  }
+}
+
+function collectPencils() {
+  pencilsOnMap.forEach((p, i) => {
+    if (rectsCollide(player, p)) {
+      if (inventory.length < backpackSize) {
+        pickupSound.play();
+        inventory.push(p);
+        pencilsOnMap.splice(i, 1);
+      }
+    }
+  });
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Draw pencils
+  pencilsOnMap.forEach(p => {
+    ctx.drawImage(pencilImg, p.x, p.y, p.w, p.h);
+  });
+
+  // Draw player
+  ctx.drawImage(playerImg, player.x, player.y, player.w, player.h);
+
+  // UI updates
+  document.getElementById('pencils').textContent = `Pencils: ${inventory.length}`;
+  document.getElementById('points').textContent = `Points: ${points}`;
+  document.getElementById('money').textContent = `Money: $${money}`;
+  document.getElementById('tier').textContent = `Tier: ${tierName[tier - 1]}`;
+  let min = Math.floor(gameTime / 60);
+  let sec = gameTime % 60;
+  document.getElementById('timer').textContent = `${min}:${sec.toString().padStart(2, '0')}`;
+}
+
+function update() {
+  if (gameOver) return;
+
+  updatePlayer();
+  collectPencils();
+
+  if (Math.random() < 0.05) spawnPencil();
+
+  if (gameTime > 0) {
+    if (frame % 60 === 0) gameTime--;
+  } else {
+    endGame();
+  }
+}
+
+function loop() {
+  frame++;
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+let frame = 0;
+loop();
+
+// CONTINUED IN CHUNK 3...
+
+// CHUNK 3: Selling, Upgrading, Teachers, Game Over
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === ' ') sellPencils();
+  if (e.key === 'u' || e.key === 'U') upgradeTier();
+});
+
+function sellPencils() {
+  let earnings = 0;
+  inventory.forEach(p => {
+    earnings += (p.tier + 1) * 5;
+    points += 1;
+  });
+  money += earnings;
+  inventory = [];
+}
+
+function upgradeTier() {
+  const upgradeCost = tier * 100;
+  if (money >= upgradeCost && tier < tierName.length) {
+    money -= upgradeCost;
+    tier++;
+    swal('Upgraded!', `You are now using ${tierName[tier - 1]} pencils!`, 'success');
+  }
+}
+
+function endGame() {
+  gameOver = true;
+  document.getElementById('gameOverScreen').style.display = 'flex';
+  document.getElementById('finalScore').textContent = `Final Score: ${points} points | $${money}`;
+  saveHighScore(points);
+}
+
+function restart() {
+  pencils = 0;
+  points = 0;
+  money = 0;
+  tier = 1;
+  backpackSize = 5;
+  inventory = [];
+  stamina = 100;
+  gameTime = 600;
+  player.x = 100;
+  player.y = 100;
+  pencilsOnMap = [];
+  document.getElementById('gameOverScreen').style.display = 'none';
+  gameOver = false;
+  frame = 0;
+}
+
+function saveHighScore(score) {
+  const scores = JSON.parse(localStorage.getItem('scores') || '[]');
+  const name = prompt("Enter your name for the leaderboard:", "Player");
+  scores.push({ name, score });
+  scores.sort((a, b) => b.score - a.score);
+  localStorage.setItem('scores', JSON.stringify(scores.slice(0, 5)));
+  renderHighScores();
+}
+
+function renderHighScores() {
+  const scores = JSON.parse(localStorage.getItem('scores') || '[]');
+  const ol = document.getElementById('highScores');
+  ol.innerHTML = '';
+  scores.forEach(s => {
+    const li = document.createElement('li');
+    li.textContent = `${s.name}: ${s.score}`;
+    ol.appendChild(li);
+  });
+}
+
+class Teacher {
+  constructor(path) {
+    this.path = path; // array of points [{x, y}, ...]
+    this.currentPoint = 0;
+    this.x = path[0].x;
+    this.y = path[0].y;
+    this.w = 40;
+    this.h = 40;
+    this.speed = 1.5;
+    this.direction = 1; // 1 = forward along path, -1 = backward
+    this.visionRange = 150;
+    this.visionAngle = Math.PI / 3; // 60 degrees vision cone
+    this.alerted = false;
+  }
+
+  update() {
+    if (this.alerted) return; // Stop moving if alerted
+
+    // Move toward next point
+    const target = this.path[this.currentPoint];
+    const dx = target.x - this.x;
+    const dy = target.y - this.y;
+    const dist = Math.hypot(dx, dy);
+
+    if (dist < this.speed) {
+      // Reached current point, switch direction or loop
+      if (this.currentPoint === this.path.length - 1) this.direction = -1;
+      else if (this.currentPoint === 0) this.direction = 1;
+      this.currentPoint += this.direction;
+    } else {
+      this.x += (dx / dist) * this.speed;
+      this.y += (dy / dist) * this.speed;
+    }
+  }
+
+  draw() {
+    // Draw teacher sprite (simple rectangle for now)
+    ctx.fillStyle = this.alerted ? 'red' : 'purple';
+    ctx.fillRect(this.x, this.y, this.w, this.h);
+
+    // Draw vision cone
+    ctx.save();
+    ctx.translate(this.x + this.w / 2, this.y + this.h / 2);
+    const angleToPlayer = Math.atan2(player.y - this.y, player.x - this.x);
+    ctx.rotate(angleToPlayer);
+    ctx.fillStyle = 'rgba(255, 0, 0, 0.2)';
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.arc(0, 0, this.visionRange, -this.visionAngle / 2, this.visionAngle / 2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  canSeePlayer() {
+    const dx = player.x + player.w/2 - (this.x + this.w/2);
+    const dy = player.y + player.h/2 - (this.y + this.h/2);
+    const dist = Math.hypot(dx, dy);
+    if (dist > this.visionRange) return false;
+
+    const angleToPlayer = Math.atan2(dy, dx);
+    // Assuming teacher faces along path movement direction
+    const nextPoint = this.path[this.currentPoint];
+    const teacherDir = Math.atan2(nextPoint.y - this.y, nextPoint.x - this.x);
+
+    const diff = Math.abs(normalizeAngle(angleToPlayer - teacherDir));
+    return diff < this.visionAngle / 2;
+  }
+}
+
+// Normalize angle to [-PI, PI]
+function normalizeAngle(angle) {
+  while (angle > Math.PI) angle -= 2 * Math.PI;
+  while (angle < -Math.PI) angle += 2 * Math.PI;
+  return angle;
+}
+
+// Initialize teachers with patrol paths
+const teachers = [
+  new Teacher([{x: 100, y: 50}, {x: 300, y: 50}]),
+  new Teacher([{x: 400, y: 400}, {x: 400, y: 200}])
+];
+
+// Hiding zones (lockers)
+const hidingZones = [
+  {x: 200, y: 300, w: 60, h: 40, occupied: false},
+  {x: 350, y: 150, w: 60, h: 40, occupied: false}
+];
+
+// Check if player is in hiding zone
+function isPlayerHiding() {
+  return hidingZones.some(zone => rectsCollide(player, zone));
+}
+
+function updateTeachers() {
+  teachers.forEach(teacher => {
+    teacher.update();
+    if (!teacher.alerted && teacher.canSeePlayer() && !isPlayerHiding()) {
+      teacher.alerted = true;
+      gameOver = true;
+      endGame();
+      alert('You got caught by a teacher!');
+    }
+  });
+}
+
+function drawTeachers() {
+  teachers.forEach(teacher => teacher.draw());
+}
+
+function drawHidingZones() {
+  hidingZones.forEach(zone => {
+    ctx.fillStyle = 'rgba(0, 0, 255, 0.3)';
+    ctx.fillRect(zone.x, zone.y, zone.w, zone.h);
+  });
+}
+
+// Obstacles (desks and walls)
+const obstacles = [
+  {x: 150, y: 150, w: 100, h: 40},
+  {x: 300, y: 300, w: 150, h: 40},
+  {x: 500, y: 100, w: 40, h: 200}
+];
+
+function drawObstacles() {
+  ctx.fillStyle = 'brown';
+  obstacles.forEach(ob => ctx.fillRect(ob.x, ob.y, ob.w, ob.h));
+}
+
+function isCollidingWithObstacles(rect) {
+  return obstacles.some(ob => rectsCollide(rect, ob));
+}
+
+function updatePlayer() {
+  player.dx = 0;
+  player.dy = 0;
+  if (keys['ArrowUp']) player.dy = -player.speed;
+  if (keys['ArrowDown']) player.dy = player.speed;
+  if (keys['ArrowLeft']) player.dx = -player.speed;
+  if (keys['ArrowRight']) player.dx = player.speed;
+
+  if (player.dx !== 0 && player.dy !== 0) {
+    player.dx *= 0.7071;
+    player.dy *= 0.7071;
+  }
+
+  // Try to move player, but block if colliding obstacles
+  let newX = player.x + player.dx;
+  let newY = player.y + player.dy;
+  const testRect = {x: newX, y: newY, w: player.w, h: player.h};
+
+  if (!isCollidingWithObstacles(testRect)) {
+    player.x = newX;
+    player.y = newY;
+  }
+
+  // Boundaries
+  player.x = Math.max(0, Math.min(canvas.width - player.w, player.x));
+  player.y = Math.max(0, Math.min(canvas.height - player.h, player.y));
+
+  // Energy drain and regen
+  if (player.dx !== 0 || player.dy !== 0) {
+    stamina = Math.max(0, stamina - 0.2);
+  } else {
+    stamina = Math.min(maxStamina, stamina + energyRegen);
+  }
+}
+
+// Update loop add-ons
+function update() {
+  if (gameOver) return;
+
+  updatePlayer();
+  collectPencils();
+  updateTeachers();
+
+  if (Math.random() < 0.05) spawnPencil();
+
+  if (gameTime > 0) {
+    if (frame % 60 === 0) gameTime--;
+  } else {
+    endGame();
+  }
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  drawObstacles();
+  drawHidingZones();
+  pencilsOnMap.forEach(p => {
+    ctx.drawImage(pencilImg, p.x, p.y, p.w, p.h);
+  });
+
+  drawTeachers();
+
+  ctx.drawImage(playerImg, player.x, player.y, player.w, player.h);
+
+  // UI updates
+  document.getElementById('pencils').textContent = `Pencils: ${inventory.length}`;
+  document.getElementById('points').textContent = `Points: ${points}`;
+  document.getElementById('money').textContent = `Money: $${money}`;
+  document.getElementById('tier').textContent = `Tier: ${tierName[tier - 1]}`;
+  let min = Math.floor(gameTime / 60);
+  let sec = gameTime % 60;
+  document.getElementById('timer').textContent = `${min}:${sec.toString().padStart(2, '0')}`;
+}
+const powerUps = [
+  {type: 'invisibility', duration: 800}, // frames
+  {type: 'speedBoost', duration: 600},
+  {type: 'pencilMagnet', duration: 1000}
+];
+
+let activePowerUp = null;
+let powerUpTimer = 0;
+
+function spawnPowerUp() {
+  if (powerUpsOnMap.length < 2 && Math.random() < 0.01) {
+    const pu = powerUps[Math.floor(Math.random() * powerUps.length)];
+    powerUpsOnMap.push({
+      x: randomRange(50, canvas.width - 50),
+      y: randomRange(50, canvas.height - 50),
+      w: 20,
+      h: 20,
+      type: pu.type,
+      duration: pu.duration
+    });
+  }
+}
+
+function updatePowerUps() {
+  // Power-up effect timer
+  if (activePowerUp) {
+    powerUpTimer--;
+    if (powerUpTimer <= 0) {
+      deactivatePowerUp();
+    }
+  }
+
+  // Check for collection
+  powerUpsOnMap.forEach((pu, i) => {
+    if (rectsCollide(player, pu)) {
+      activatePowerUp(pu.type, pu.duration);
+      powerUpsOnMap.splice(i, 1);
+      powerUpPickupSound.play();
+    }
+  });
+}
+
+function activatePowerUp(type, duration) {
+  activePowerUp = type;
+  powerUpTimer = duration;
+
+  if (type === 'speedBoost') player.speed = 5;
+  if (type === 'invisibility') {
+    // make player semi-transparent or skip detection logic in teacher.canSeePlayer
+  }
+  if (type === 'pencilMagnet') {
+    // pencils attracted to player (handled in update loop)
+  }
+}
+
+function deactivatePowerUp() {
+  if (activePowerUp === 'speedBoost') player.speed = 3;
+  activePowerUp = null;
+}
+
+// Backpack upgrade cost and max size
+function upgradeBackpack() {
+  const cost = backpackSize * 150;
+  if (money >= cost) {
+    money -= cost;
+    backpackSize += 3;
+    swal('Backpack Upgraded!', `You can now carry ${backpackSize} pencils!`, 'success');
+  }
+}
+
+// Mini quests (e.g. collect X pencils of certain tier)
+let currentQuest = {
+  requiredTier: 2,
+  requiredCount: 5,
+  progress: 0,
+  reward: 500
+};
+
+function checkQuestProgress() {
+  let count = inventory.filter(p => p.tier === currentQuest.requiredTier).length;
+  currentQuest.progress = count;
+  if (count >= currentQuest.requiredCount) {
+    money += currentQuest.reward;
+    swal('Quest Complete!', `You earned $${currentQuest.reward} for collecting pencils!`, 'success');
+    // reset or generate new quest here
+    currentQuest = {
+      requiredTier: Math.min(tierName.length - 1, currentQuest.requiredTier + 1),
+      requiredCount: currentQuest.requiredCount + 2,
+      progress: 0,
+      reward: currentQuest.reward + 300
+    };
+  }
+}
+
+// Combo scoring system
+let comboCount = 0;
+let comboTimer = 0;
+const comboDuration = 180; // frames
+
+function sellPencils() {
+  if (inventory.length === 0) return;
+
+  let earnings = 0;
+  inventory.forEach(p => {
+    earnings += (p.tier + 1) * 5;
+    points += 1;
+  });
+
+  // Combo logic
+  if (comboTimer > 0) comboCount++;
+  else comboCount = 1;
+  comboTimer = comboDuration;
+
+  money += earnings * comboCount;
+
+  swal(`Combo x${comboCount}!`, `Sold pencils for $${earnings * comboCount}`, 'info');
+
+  inventory = [];
+}
+
+function updateCombo() {
+  if (comboTimer > 0) comboTimer--;
+  else comboCount = 0;
+}
+
+// Energy/Stamina UI bar
+function drawEnergyBar() {
+  const barWidth = 200;
+  const barHeight = 20;
+  const x = 10;
+  const y = canvas.height - barHeight - 10;
+
+  ctx.fillStyle = 'black';
+  ctx.fillRect(x - 2, y - 2, barWidth + 4, barHeight + 4);
+  ctx.fillStyle = 'gray';
+  ctx.fillRect(x, y, barWidth, barHeight);
+  ctx.fillStyle = 'limegreen';
+  ctx.fillRect(x, y, (stamina / maxStamina) * barWidth, barHeight);
+
+  ctx.fillStyle = 'white';
+  ctx.font = '16px Arial';
+  ctx.fillText('Stamina', x + 5, y + 16);
+}
+
+// Sound setup (load audio files)
+const pickupSound = new Audio('sounds/pickup.wav');
+const powerUpPickupSound = new Audio('sounds/powerup.wav');
+const sellSound = new Audio('sounds/sell.wav');
+const teacherAlertSound = new Audio('sounds/alert.wav');
+const backgroundMusic = new Audio('sounds/background.mp3');
+backgroundMusic.loop = true;
+backgroundMusic.volume = 0.4;
+backgroundMusic.play().catch(() => {}); // play async
+
+// In main update loop:
+function update() {
+  if (gameOver) return;
+
+  updatePlayer();
+  collectPencils();
+  updatePowerUps();
+  updateTeachers();
+  updateCombo();
+  checkQuestProgress();
+
+  if (Math.random() < 0.05) spawnPencil();
+  if (Math.random() < 0.003) spawnPowerUp();
+
+  if (gameTime > 0) {
+    if (frame % 60 === 0) gameTime--;
+  } else {
+    endGame();
+  }
+}
+
+// In draw():
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  drawObstacles();
+  drawHidingZones();
+  pencilsOnMap.forEach(p => ctx.drawImage(pencilImg, p.x, p.y, p.w, p.h));
+  powerUpsOnMap.forEach(pu => {
+    ctx.fillStyle = 'yellow';
+    ctx.beginPath();
+    ctx.arc(pu.x + pu.w/2, pu.y + pu.h/2, 10, 0, 2 * Math.PI);
+    ctx.fill();
+  });
+
+  drawTeachers();
+  ctx.drawImage(playerImg, player.x, player.y, player.w, player.h);
+  drawEnergyBar();
+
+  // UI updates
+  document.getElementById('pencils').textContent = `Pencils: ${inventory.length}`;
+  document.getElementById('points').textContent = `Points: ${points}`;
+  document.getElementById('money').textContent = `Money: $${money}`;
+  document.getElementById('tier').textContent = `Tier: ${tierName[tier - 1]}`;
+  document.getElementById('quest').textContent = `Quest: Collect ${currentQuest.requiredCount} ${tierName[currentQuest.requiredTier]} pencils (${currentQuest.progress}/${currentQuest.requiredCount})`;
+  document.getElementById('timer').textContent = `${Math.floor(gameTime/60)}:${(gameTime%60).toString().padStart(2,'0')}`;
+}
+// --- 1. Animated Sprites Setup ---
+// Assuming sprite sheets loaded with frames for player, teacher, pencils
+
+// Sprite frame counters & animation speed
+const animSpeed = 8; // frames per sprite frame
+let animFrame = 0;
+
+// Player animation frames (e.g., idle, walking)
+const playerSprites = {
+  idle: playerImg, // placeholder: replace with sprite sheet frame cropping if you want
+  walk: [ /* Array of walking frames if available */ ]
+};
+
+// Teacher animation frames
+const teacherSprites = {
+  idle: teacherImg,
+  walk: [ /* Array of walking frames */ ]
+};
+
+// Animate function
+function animateSprite(spriteFrames, x, y, w, h) {
+  const frameIndex = Math.floor(animFrame / animSpeed) % spriteFrames.length;
+  ctx.drawImage(spriteFrames[frameIndex], x, y, w, h);
+}
+
+// Modify draw() for animated sprites:
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Weather/time-of-day effect overlay
+  drawWeatherOverlay();
+
+  drawObstacles();
+  drawHidingZones();
+
+  // Draw pencils (animated)
+  pencilsOnMap.forEach(p => {
+    animateSprite(pencilSpriteFrames, p.x, p.y, p.w, p.h);
+  });
+
+  // Draw power-ups with simple animation (pulsing)
+  powerUpsOnMap.forEach(pu => {
+    const alpha = 0.5 + 0.5 * Math.sin(animFrame / 10);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = 'yellow';
+    ctx.beginPath();
+    ctx.arc(pu.x + pu.w/2, pu.y + pu.h/2, 10, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.restore();
+  });
+
+  // Draw teachers (animated walking or idle)
+  teachers.forEach(t => {
+    if (t.dx !== 0 || t.dy !== 0) {
+      animateSprite(teacherSprites.walk, t.x, t.y, t.w, t.h);
+    } else {
+      ctx.drawImage(teacherSprites.idle, t.x, t.y, t.w, t.h);
+    }
+  });
+
+  // Draw player (animated)
+  if (player.dx !== 0 || player.dy !== 0) {
+    animateSprite(playerSprites.walk, player.x, player.y, player.w, player.h);
+  } else {
+    ctx.drawImage(playerSprites.idle, player.x, player.y, player.w, player.h);
+  }
+
+  drawEnergyBar();
+
+  drawTeachersVision();
+
+  drawMinimap();
+
+  // UI updates
+  document.getElementById('pencils').textContent = `Pencils: ${inventory.length}`;
+  document.getElementById('points').textContent = `Points: ${points}`;
+  document.getElementById('money').textContent = `Money: $${money}`;
+  document.getElementById('tier').textContent = `Tier: ${tierName[tier - 1]}`;
+  document.getElementById('quest').textContent = `Quest: Collect ${currentQuest.requiredCount} ${tierName[currentQuest.requiredTier]} pencils (${currentQuest.progress}/${currentQuest.requiredCount})`;
+  document.getElementById('timer').textContent = `${Math.floor(gameTime/60)}:${(gameTime%60).toString().padStart(2,'0')}`;
+
+  animFrame++;
+}
+
+// --- 2. Lighting Effects for Teacher Vision Cones ---
+function drawTeachersVision() {
+  teachers.forEach(t => {
+    const fovLength = 150;
+    const fovAngle = Math.PI / 3; // 60 degrees
+
+    // Calculate vision cone direction based on movement
+    let angle = 0;
+    if (t.dx !== 0 || t.dy !== 0) {
+      angle = Math.atan2(t.dy, t.dx);
+    }
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(255, 255, 0, 0.15)';
+    ctx.beginPath();
+    ctx.moveTo(t.x + t.w/2, t.y + t.h/2);
+    ctx.arc(t.x + t.w/2, t.y + t.h/2, fovLength, angle - fovAngle/2, angle + fovAngle/2);
+    ctx.lineTo(t.x + t.w/2, t.y + t.h/2);
+    ctx.fill();
+
+    // Optional glow effect
+    const gradient = ctx.createRadialGradient(t.x + t.w/2, t.y + t.h/2, fovLength * 0.7, t.x + t.w/2, t.y + t.h/2, fovLength);
+    gradient.addColorStop(0, 'rgba(255, 255, 0, 0.3)');
+    gradient.addColorStop(1, 'rgba(255, 255, 0, 0)');
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(t.x + t.w/2, t.y + t.h/2, fovLength, angle - fovAngle/2, angle + fovAngle/2);
+    ctx.lineTo(t.x + t.w/2, t.y + t.h/2);
+    ctx.fill();
+
+    ctx.restore();
+  });
+}
+
+// --- 3. Weather / Time-of-Day Changes ---
+let weather = 'day'; // 'day', 'night', 'rain'
+let weatherTimer = 0;
+const weatherDuration = 1800; // 30 seconds (at 60fps)
+
+function updateWeather() {
+  weatherTimer--;
+  if (weatherTimer <= 0) {
+    const options = ['day', 'night', 'rain'];
+    weather = options[Math.floor(Math.random() * options.length)];
+    weatherTimer = weatherDuration;
+  }
+}
+
+function drawWeatherOverlay() {
+  ctx.save();
+  if (weather === 'night') {
+    ctx.fillStyle = 'rgba(0, 0, 50, 0.3)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  } else if (weather === 'rain') {
+    ctx.fillStyle = 'rgba(50, 50, 70, 0.2)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    // Simple rain effect: draw lines
+    for (let i = 0; i < 100; i++) {
+      ctx.strokeStyle = 'rgba(200, 200, 255, 0.3)';
+      ctx.beginPath();
+      let x = Math.random() * canvas.width;
+      let y = Math.random() * canvas.height;
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + 2, y + 10);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+// Call updateWeather inside main update loop
+function update() {
+  if (gameOver) return;
+
+  updatePlayer();
+  collectPencils();
+  updatePowerUps();
+  updateTeachers();
+  updateCombo();
+  checkQuestProgress();
+  updateWeather();
+
+  if (Math.random() < 0.05) spawnPencil();
+  if (Math.random() < 0.003) spawnPowerUp();
+
+  if (gameTime > 0) {
+    if (frame % 60 === 0) gameTime--;
+  } else {
+    endGame();
+  }
+}
+
+// --- 4. Better UI with Minimap and Icons ---
+
+// Minimap parameters
+const minimap = {
+  x: canvas.width - 160,
+  y: 20,
+  w: 140,
+  h: 140,
+  scaleX: 0,
+  scaleY: 0
+};
+
+minimap.scaleX = minimap.w / canvas.width;
+minimap.scaleY = minimap.h / canvas.height;
+
+function drawMinimap() {
+  ctx.save();
+  ctx.strokeStyle = 'white';
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.lineWidth = 2;
+  ctx.fillRect(minimap.x, minimap.y, minimap.w, minimap.h);
+  ctx.strokeRect(minimap.x, minimap.y, minimap.w, minimap.h);
+
+  // Draw player on minimap
+  ctx.fillStyle = 'lime';
+  ctx.fillRect(minimap.x + player.x * minimap.scaleX - 5, minimap.y + player.y * minimap.scaleY - 5, 10, 10);
+
+  // Draw teachers
+  ctx.fillStyle = 'red';
+  teachers.forEach(t => {
+    ctx.fillRect(minimap.x + t.x * minimap.scaleX - 5, minimap.y + t.y * minimap.scaleY - 5, 10, 10);
+  });
+
+  // Draw pencils
+  ctx.fillStyle = 'yellow';
+  pencilsOnMap.forEach(p => {
+    ctx.fillRect(minimap.x + p.x * minimap.scaleX - 3, minimap.y + p.y * minimap.scaleY - 3, 6, 6);
+  });
+
+  // Draw power-ups
+  ctx.fillStyle = 'cyan';
+  powerUpsOnMap.forEach(pu => {
+    ctx.fillRect(minimap.x + pu.x * minimap.scaleX - 4, minimap.y + pu.y * minimap.scaleY - 4, 8, 8);
+  });
+
+  ctx.restore();
+}
+
+// --- 5. Online Leaderboard Integration (localStorage fallback) ---
+
+// Highscores are saved in localStorage already (see previous saveHighScore, renderHighScores)
+
+// Add Name Entry on game over
+function saveHighScore(score) {
+  const scores = JSON.parse(localStorage.getItem('scores') || '[]');
+  const name = prompt("Enter your name for the leaderboard:", "Player");
+  scores.push({ name, score });
+  scores.sort((a, b) => b.score - a.score);
+  localStorage.setItem('scores', JSON.stringify(scores.slice(0, 5)));
+  renderHighScores();
+}
+
+// If you want to do online leaderboard, integrate with backend or Firebase API here
+
+// Render leaderboard already implemented
+
+// Call loop once more to start animation
+requestAnimationFrame(loop);
+</body>
+</html>
